@@ -1,0 +1,57 @@
+{
+  "test_accuracy": 0.9055,
+  "correct": 9055,
+  "total": 10000,
+  "top_confusions": [
+    {
+      "true": "cat",
+      "pred": "dog",
+      "count": 79
+    },
+    {
+      "true": "dog",
+      "pred": "cat",
+      "count": 74
+    },
+    {
+      "true": "airplane",
+      "pred": "ship",
+      "count": 33
+    },
+    {
+      "true": "truck",
+      "pred": "automobile",
+      "count": 33
+    },
+    {
+      "true": "bird",
+      "pred": "dog",
+      "count": 33
+    },
+    {
+      "true": "cat",
+      "pred": "frog",
+      "count": 31
+    },
+    {
+      "true": "airplane",
+      "pred": "bird",
+      "count": 30
+    },
+    {
+      "true": "bird",
+      "pred": "frog",
+      "count": 28
+    },
+    {
+      "true": "bird",
+      "pred": "airplane",
+      "count": 27
+    },
+    {
+      "true": "bird",
+      "pred": "deer",
+      "count": 27
+    }
+  ]
+}
