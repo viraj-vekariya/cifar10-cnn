@@ -181,3 +181,33 @@ python evaluate.py    # loads outputs/best_model.pth, evaluates on the test set
 `outputs/best_model.pth` is gitignored (it's regenerable by rerunning
 `train.py`); the plots and result JSON files in `outputs/` are committed
 as evidence of the actual run.
+
+## Checkpointing, resuming, and early stopping
+
+```bash
+python train.py --epochs 30                          # trains, writes a checkpoint every epoch
+python train.py --epochs 30 --resume outputs/checkpoints/last.pth   # continue after a crash/interrupt
+python train.py --epochs 30 --patience 5              # stop early if val_acc plateaus for 5 epochs
+```
+
+- `outputs/checkpoints/last.pth` is overwritten every epoch; `outputs/checkpoints/best.pth`
+  only on a new best validation accuracy. Both hold model, optimizer, and
+  LR-scheduler state, plus the epoch number, running history, and the
+  epoch budget (`num_epochs`) that run was planned for — gitignored, since
+  they're regenerable and can get large.
+- **Resume is tied to the original epoch budget, not `--epochs` on the
+  resume command.** The cosine LR schedule is planned for a fixed total
+  epoch count set at the start of a run; if a resumed run were allowed to
+  silently change that total, the restored scheduler state would desync
+  from the new schedule and the LR could jump back up mid-anneal instead
+  of continuing to decay. So on resume, the checkpoint's original
+  `num_epochs` wins and a mismatched `--epochs` is ignored (with a printed
+  note). Verified with a smoke test that interrupts a 4-epoch run after
+  epoch 2, resumes it, and checks the resulting LR trajectory against an
+  uninterrupted reference run — both produced exactly
+  `[0.08536, 0.05, 0.01464, 0.0]`.
+- **Early stopping** tracks epochs since the last validation-accuracy
+  improvement and stops once that streak reaches `--patience` (default 7).
+  Verified with a forced-plateau smoke test (patience=2, 6 epochs
+  requested): training stopped at epoch 3, printing `early stopping:
+  val_acc hasn't improved for 2 epochs (patience=2), stopping at epoch 3`.

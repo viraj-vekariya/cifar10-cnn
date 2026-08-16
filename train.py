@@ -30,6 +30,8 @@ def parse_args():
                          help=f"directory to write resumable checkpoints (default: {CHECKPOINT_DIR})")
     parser.add_argument("--resume", type=str, default=None,
                          help="path to a checkpoint (e.g. outputs/checkpoints/last.pth) to resume training from")
+    parser.add_argument("--patience", type=int, default=7,
+                         help="stop training if val_acc doesn't improve for this many epochs (default: 7)")
     return parser.parse_args()
 
 
@@ -137,6 +139,7 @@ def main():
               f"best_val_acc {best_val_acc:.4f}, continuing at epoch {start_epoch}")
 
     start_time = time.time()
+    epochs_no_improve = 0
 
     for epoch in range(start_epoch, num_epochs + 1):
         epoch_start = time.time()
@@ -158,10 +161,18 @@ def main():
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
+            epochs_no_improve = 0
             torch.save(model.state_dict(), "outputs/best_model.pth")
             save_checkpoint(best_ckpt, epoch, num_epochs, model, optimizer, scheduler, best_val_acc, history)
+        else:
+            epochs_no_improve += 1
 
         save_checkpoint(last_ckpt, epoch, num_epochs, model, optimizer, scheduler, best_val_acc, history)
+
+        if epochs_no_improve >= args.patience:
+            print(f"early stopping: val_acc hasn't improved for {epochs_no_improve} "
+                  f"epochs (patience={args.patience}), stopping at epoch {epoch}")
+            break
 
     total_time = time.time() - start_time
     print(f"training done in {total_time / 60:.1f} min. best val_acc: {best_val_acc:.4f}")
@@ -171,7 +182,7 @@ def main():
     with open("outputs/history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    epochs_range = range(1, num_epochs + 1)
+    epochs_range = range(1, len(history["train_loss"]) + 1)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     axes[0].plot(epochs_range, history["train_loss"], label="train")
     axes[0].plot(epochs_range, history["val_loss"], label="val")
