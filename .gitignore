@@ -4,3 +4,4 @@ venv/
 .venv/
 data/
 outputs/best_model.pth
+outputs/checkpoints/

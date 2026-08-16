@@ -1,4 +1,6 @@
+import argparse
 import json
+import os
 import time
 
 import matplotlib.pyplot as plt
@@ -17,6 +19,28 @@ WEIGHT_DECAY = 5e-4
 VAL_SIZE = 5000
 SEED = 42
 NUM_WORKERS = 4
+CHECKPOINT_DIR = "outputs/checkpoints"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train the CIFAR-10 CNN.")
+    parser.add_argument("--epochs", type=int, default=EPOCHS,
+                         help=f"number of epochs to train (default: {EPOCHS})")
+    parser.add_argument("--checkpoint-dir", type=str, default=CHECKPOINT_DIR,
+                         help=f"directory to write resumable checkpoints (default: {CHECKPOINT_DIR})")
+    return parser.parse_args()
+
+
+def save_checkpoint(path, epoch, model, optimizer, scheduler, best_val_acc, history):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save({
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "best_val_acc": best_val_acc,
+        "history": history,
+    }, path)
 
 
 def get_device():
@@ -47,6 +71,9 @@ def run_epoch(model, loader, criterion, optimizer, device, train):
 
 
 def main():
+    args = parse_args()
+    num_epochs = args.epochs
+
     device = get_device()
     print(f"device: {device}")
 
@@ -71,13 +98,16 @@ def main():
     # milestone epochs to hand-pick (unlike step decay). Since the epoch
     # budget is fixed and known upfront, cosine's smooth anneal-to-zero suits
     # a short, one-shot training run better than step decay's plateaus.
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
     best_val_acc = 0.0
     start_time = time.time()
 
-    for epoch in range(1, EPOCHS + 1):
+    last_ckpt = os.path.join(args.checkpoint_dir, "last.pth")
+    best_ckpt = os.path.join(args.checkpoint_dir, "best.pth")
+
+    for epoch in range(1, num_epochs + 1):
         epoch_start = time.time()
         train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, device, train=True)
         val_loss, val_acc = run_epoch(model, val_loader, criterion, optimizer, device, train=False)
@@ -90,7 +120,7 @@ def main():
         history["val_acc"].append(val_acc)
         history["lr"].append(optimizer.param_groups[0]["lr"])
 
-        print(f"epoch {epoch:2d}/{EPOCHS}  "
+        print(f"epoch {epoch:2d}/{num_epochs}  "
               f"train_loss {train_loss:.4f}  train_acc {train_acc:.4f}  "
               f"val_loss {val_loss:.4f}  val_acc {val_acc:.4f}  "
               f"lr {history['lr'][-1]:.5f}  ({epoch_time:.1f}s)")
@@ -98,6 +128,9 @@ def main():
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save(model.state_dict(), "outputs/best_model.pth")
+            save_checkpoint(best_ckpt, epoch, model, optimizer, scheduler, best_val_acc, history)
+
+        save_checkpoint(last_ckpt, epoch, model, optimizer, scheduler, best_val_acc, history)
 
     total_time = time.time() - start_time
     print(f"training done in {total_time / 60:.1f} min. best val_acc: {best_val_acc:.4f}")
@@ -107,7 +140,7 @@ def main():
     with open("outputs/history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    epochs_range = range(1, EPOCHS + 1)
+    epochs_range = range(1, num_epochs + 1)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     axes[0].plot(epochs_range, history["train_loss"], label="train")
     axes[0].plot(epochs_range, history["val_loss"], label="val")
