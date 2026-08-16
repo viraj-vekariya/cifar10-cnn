@@ -28,13 +28,16 @@ def parse_args():
                          help=f"number of epochs to train (default: {EPOCHS})")
     parser.add_argument("--checkpoint-dir", type=str, default=CHECKPOINT_DIR,
                          help=f"directory to write resumable checkpoints (default: {CHECKPOINT_DIR})")
+    parser.add_argument("--resume", type=str, default=None,
+                         help="path to a checkpoint (e.g. outputs/checkpoints/last.pth) to resume training from")
     return parser.parse_args()
 
 
-def save_checkpoint(path, epoch, model, optimizer, scheduler, best_val_acc, history):
+def save_checkpoint(path, epoch, num_epochs, model, optimizer, scheduler, best_val_acc, history):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save({
         "epoch": epoch,
+        "num_epochs": num_epochs,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
@@ -88,6 +91,23 @@ def main():
 
     model = CIFAR10CNN().to(device)
     criterion = nn.CrossEntropyLoss()
+
+    checkpoint = None
+    if args.resume:
+        # Load before building the scheduler: CosineAnnealingLR's T_max is
+        # fixed at construction time, so resuming with a different --epochs
+        # than the original run would silently desync the LR curve (the
+        # restored scheduler state assumes the old T_max, which can make lr
+        # climb back up instead of continuing to anneal). Keeping the
+        # checkpoint's original epoch budget is what keeps the schedule
+        # mathematically consistent across a resume.
+        checkpoint = torch.load(args.resume, map_location=device)
+        if checkpoint["num_epochs"] != num_epochs:
+            print(f"note: checkpoint was trained toward --epochs {checkpoint['num_epochs']}; "
+                  f"keeping that total for a consistent LR schedule (ignoring --epochs {num_epochs})")
+            num_epochs = checkpoint["num_epochs"]
+        model.load_state_dict(checkpoint["model_state_dict"])
+
     # SGD + momentum + weight decay is the classic recipe for small CIFAR-style
     # CNNs with BatchNorm; it generalizes at least as well as Adam here and is
     # what most reference CIFAR-10 training setups use, so it's the more
@@ -102,12 +122,23 @@ def main():
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
     best_val_acc = 0.0
-    start_time = time.time()
+    start_epoch = 1
 
     last_ckpt = os.path.join(args.checkpoint_dir, "last.pth")
     best_ckpt = os.path.join(args.checkpoint_dir, "best.pth")
 
-    for epoch in range(1, num_epochs + 1):
+    if checkpoint is not None:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        best_val_acc = checkpoint["best_val_acc"]
+        history = checkpoint["history"]
+        start_epoch = checkpoint["epoch"] + 1
+        print(f"resumed from {args.resume}: completed epoch {checkpoint['epoch']}, "
+              f"best_val_acc {best_val_acc:.4f}, continuing at epoch {start_epoch}")
+
+    start_time = time.time()
+
+    for epoch in range(start_epoch, num_epochs + 1):
         epoch_start = time.time()
         train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, device, train=True)
         val_loss, val_acc = run_epoch(model, val_loader, criterion, optimizer, device, train=False)
@@ -128,9 +159,9 @@ def main():
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save(model.state_dict(), "outputs/best_model.pth")
-            save_checkpoint(best_ckpt, epoch, model, optimizer, scheduler, best_val_acc, history)
+            save_checkpoint(best_ckpt, epoch, num_epochs, model, optimizer, scheduler, best_val_acc, history)
 
-        save_checkpoint(last_ckpt, epoch, model, optimizer, scheduler, best_val_acc, history)
+        save_checkpoint(last_ckpt, epoch, num_epochs, model, optimizer, scheduler, best_val_acc, history)
 
     total_time = time.time() - start_time
     print(f"training done in {total_time / 60:.1f} min. best val_acc: {best_val_acc:.4f}")
