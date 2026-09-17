@@ -32,7 +32,33 @@ def parse_args():
                          help="path to a checkpoint (e.g. outputs/checkpoints/last.pth) to resume training from")
     parser.add_argument("--patience", type=int, default=7,
                          help="stop training if val_acc doesn't improve for this many epochs (default: 7)")
+    parser.add_argument("--mixup_alpha", type=float, default=0.0,
+                         help="mixup interpolation strength (Beta(alpha, alpha)); 0 or unset disables mixup (default: 0.0)")
     return parser.parse_args()
+
+
+def mixup_data(images, labels, alpha, device):
+    """Mixes one batch with a random permutation of itself.
+
+    Returns (mixed_images, labels_a, labels_b, lam) where labels_a are the
+    original (unpermuted) labels and labels_b are the permuted-partner
+    labels -- the loss is blended against BOTH via mixup_criterion below,
+    rather than blending the labels themselves into soft one-hot targets.
+    Blending labels and using plain cross-entropy on the blend is a common
+    shortcut, but it's not what the mixup paper actually does and it isn't
+    equivalent for cross-entropy (loss is not linear in a one-hot blend the
+    way it is when you blend the two per-sample losses directly).
+    """
+    if alpha <= 0:
+        return images, labels, labels, 1.0
+    lam = float(torch.distributions.Beta(alpha, alpha).sample())
+    index = torch.randperm(images.size(0), device=device)
+    mixed_images = lam * images + (1 - lam) * images[index]
+    return mixed_images, labels, labels[index], lam
+
+
+def mixup_criterion(criterion, outputs, labels_a, labels_b, lam):
+    return lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
 
 
 def save_checkpoint(path, epoch, num_epochs, model, optimizer, scheduler, best_val_acc, history):
@@ -56,7 +82,7 @@ def get_device():
     return torch.device("cpu")
 
 
-def run_epoch(model, loader, criterion, optimizer, device, train):
+def run_epoch(model, loader, criterion, optimizer, device, train, mixup_alpha=0.0):
     model.train(train)
     total_loss, correct, total = 0.0, 0, 0
     with torch.set_grad_enabled(train):
@@ -64,12 +90,21 @@ def run_epoch(model, loader, criterion, optimizer, device, train):
             images, labels = images.to(device), labels.to(device)
             if train:
                 optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+            if train and mixup_alpha > 0:
+                mixed_images, labels_a, labels_b, lam = mixup_data(images, labels, mixup_alpha, device)
+                outputs = model(mixed_images)
+                loss = mixup_criterion(criterion, outputs, labels_a, labels_b, lam)
+            else:
+                outputs = model(images)
+                loss = criterion(outputs, labels)
             if train:
                 loss.backward()
                 optimizer.step()
             total_loss += loss.item() * images.size(0)
+            # Accuracy is measured against the original (unpermuted) label
+            # even under mixup -- the input was blended, so "correct" here
+            # is an approximation (agreement with the dominant/first label),
+            # not a strict accuracy figure. See README.
             correct += (outputs.argmax(1) == labels).sum().item()
             total += images.size(0)
     return total_loss / total, correct / total
@@ -143,7 +178,8 @@ def main():
 
     for epoch in range(start_epoch, num_epochs + 1):
         epoch_start = time.time()
-        train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, device, train=True)
+        train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, device,
+                                           train=True, mixup_alpha=args.mixup_alpha)
         val_loss, val_acc = run_epoch(model, val_loader, criterion, optimizer, device, train=False)
         scheduler.step()
         epoch_time = time.time() - epoch_start

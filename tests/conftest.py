@@ -29,7 +29,7 @@ class FakeRunEpoch:
         self.train_results = list(train_results)
         self.val_results = list(val_results)
 
-    def __call__(self, model, loader, criterion, optimizer, device, train):
+    def __call__(self, model, loader, criterion, optimizer, device, train, mixup_alpha=0.0):
         results = self.train_results if train else self.val_results
         if not results:
             raise AssertionError(
