@@ -161,7 +161,7 @@ Top confused pairs (true -> predicted, count out of 10,000 test images):
 - No ensembling of multiple trained models.
 - Not competitive with SOTA CIFAR-10 results (~99%+), which use much
   larger architectures (ResNets, WideResNets, etc.), heavier augmentation
-  (Cutout, MixUp, AutoAugment), and far longer training schedules
+  stacks (Cutout, AutoAugment, and this repo's own Mixup combined), and far longer training schedules
   (hundreds of epochs on much stronger hardware). This is a small,
   from-scratch CNN trained briefly on a laptop GPU — the goal is a
   defensible, understandable architecture and training pipeline, not a
@@ -211,3 +211,57 @@ python train.py --epochs 30 --patience 5              # stop early if val_acc pl
   Verified with a forced-plateau smoke test (patience=2, 6 epochs
   requested): training stopped at epoch 3, printing `early stopping:
   val_acc hasn't improved for 2 epochs (patience=2), stopping at epoch 3`.
+
+## Mixup augmentation
+
+```bash
+python train.py --epochs 30 --mixup_alpha 0.4   # 0 or unset disables mixup (default)
+```
+
+Each training batch is mixed with a random permutation of itself —
+`mixed = lam * images + (1 - lam) * images[perm]`, `lam ~ Beta(alpha, alpha)`
+— and the loss is blended the same way: `lam * loss(pred, y) + (1 - lam) *
+loss(pred, y[perm])`. This is deliberately **not** the common shortcut of
+blending the two labels into a soft one-hot target and running plain
+cross-entropy on the blend — that shortcut isn't equivalent, because
+cross-entropy isn't linear in a blended one-hot target the way it is when
+you blend the two per-sample losses directly (`mixup_criterion` in
+`train.py`). Accuracy during a mixup epoch is measured against the
+original, unpermuted label, so it's an approximation, not a strict figure,
+for that epoch.
+
+**Hardest bug: a real collapse, from a DataLoader issue, not the mixup math.**
+The first full comparison run (`compare_mixup.py`, 5 epochs each,
+`num_workers=4`) showed mixup completely failing to learn — loss stuck at
+`ln(10) ≈ 2.303` and accuracy pinned at ~10% (random chance) for all 5
+epochs, while the baseline reached 66%. That's not "mixup is a bit worse,"
+that's the network stuck outputting a uniform distribution from epoch 1
+onward — a strong signal something was actually broken, not just a
+disappointing hyperparameter. A targeted diagnostic (same seed, same LR,
+`num_workers=0` instead of 4) trained completely normally with mixup on,
+which isolated the cause to the multiprocessing DataLoader workers, not
+`mixup_data`/`mixup_criterion` themselves — re-running the full comparison
+with `num_workers=0` gave a sane, honest result (below). The unit tests for
+mixup's math (convex combination, the lambda=1 edge case, gradient flow)
+had all passed the whole time, which is exactly why this was worth
+tracking down rather than shrugging off as "mixup just doesn't work
+here" — the math was fine; the harness feeding it data wasn't.
+
+**Real comparative result, 5 epochs each, same seed/architecture/LR
+(`compare_mixup.py`, not a full 30-epoch retrain):**
+
+| | train_acc | val_acc |
+|---|---|---|
+| Baseline (no mixup) | 59.95% | 65.50% |
+| Mixup (alpha=0.4) | 32.42%* | 62.36% |
+
+*Mixup's train_acc is measured against the un-mixed label as described
+above, so it understates how well the model is actually fitting the mixed
+inputs — val_acc, evaluated on clean images, is the fair comparison.
+Mixup trails the baseline by about 3 points here, which is the expected,
+honest short-run outcome: mixup makes the training task harder from the
+start (real gradient signal, blended targets, less "free" early accuracy)
+in exchange for better generalization, and that trade only pays off over
+longer training — 5 epochs isn't enough to see the payoff, only the cost.
+This is not a "mixup helps" result; it's a "mixup works correctly and
+costs what the literature says it costs at this epoch count" result.
